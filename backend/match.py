@@ -1,287 +1,314 @@
-import uuid
-
+from io import StringIO
+import json
+import sys
 import networkx as nx
 import numpy as np
 import pandas as pd
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
+from random import randint
 
+class MatchMaker:
+    def __init__(self):
+        self.columns = [
+            {
+                'name': 'id',
+                'type': 'uuid',
+            }, 
+            {
+                'name': 'role',
+                'type': 'role',
+            },
+            {
+                'name': 'course',
+                'type': 'binary',
+                'weight': 3
+            },
+            {
+                'name': 'pronouns',
+                'type': 'multiple_choice',
+                'weight': 8
+            },
+            {
+                'name': 'ethnicity',
+                'type': 'multiple_choice',
+                'weight': 4
+            },
+            {
+                'name': 'city',
+                'type': 'embedding',
+                'weight': 1
+            },
+            {
+                'name': 'lgbt',
+                'type': 'multiple_choice',
+                'weight': 3
+            },
+            {
+                'name': 'parties',
+                'type': 'numeric',
+                'weight': 2
+            },
+            {
+                'name': 'hobby',
+                'type': 'embedding',
+                'weight': 2
+            },
+            {
+                'name': 'music',
+                'type': 'embedding',
+                'weight': 1
+            },
+            {
+                'name': 'games',
+                'type': 'embedding',
+                'weight': 1
+            },
+            {
+                'name': 'sports',
+                'type': 'embedding',
+                'weight': 2
+            }
+        ]
 
-setup = {
-    'drop' : [0,1],
-    'personal' : [0,1],
-    'veterano' : [3],
-}
+        self.embedder = SentenceTransformer('all-mpnet-base-v2')
+        # Data placeholders
+        self.df = None
+        self.topic_to_cols = None
+        self.role_col = None
+        self.curso_col = None
+        self.nome_col = None
+        self.par_idx = None
+        self.chi_idx = None
+        self.edges = None
+        self.col_to_weights = None
+        self.max_connections = 2
 
-topic_to_idx = {
-    'multiple_choice' : [2],
-    'binary' : [3,4],
-    'numerical' : [6],
-    'embedding' : [5,7,8,9],
-}
+    def import_data(self, data):
+        """
+        Imports data from a JSON string or a Python dict/list.
+        """
 
+        self.df = pd.read_json(data)
+                
+        # Define indices based on the 'padrinho' column
+        self.par_idx = self.df[self.df['role'] == 'veterane'].index.to_list()
+        self.chi_idx = self.df.index.difference(self.par_idx).to_list()
 
-total_df = pd.read_csv('../test.csv')
+    def normalize_func(self, row):
+        if np.sum(row) == 0:
+            return row
+        return row / np.sum(row)
 
-total_df.columns = total_df.columns.str.replace(r'[^\w]', '_', regex=True)
+    def normalize_rows(self, mat):
+        normalized_mat = np.apply_along_axis(self.normalize_func, axis=1, arr=mat)
+        return normalized_mat
 
-total_df['ID'] = [str(uuid.uuid4()) for _ in range(len(total_df))]
-total_df = total_df.drop(total_df.columns[setup['drop']], axis=1)
+    def get_embed_weight(self, chi_resp, par_resp):
+        try:
+            par_embed = self.embedder.encode(par_resp)
+            chi_embed = self.embedder.encode(chi_resp)
+            weight_mat = cosine_similarity(chi_embed, par_embed)
+        except Exception as e:
+            print(e)
+            print(par_resp)
+            print(chi_resp)
+            exit()
+            weight_mat = np.zeros((len(chi_resp), len(par_resp)))
+        return weight_mat
 
-personal_df = total_df.iloc[:, setup['personal']+setup['veterano']].copy()
+    def num_func(self, x1, x2):
+        return 1 - (x1 - x2)**2
 
-personal_df['ID'] = total_df['ID']
+    def get_num_weight(self, chi_resp, par_resp):
+        par_numeric = np.array([int(x) for x in par_resp])
+        chi_numeric = np.array([int(x) for x in chi_resp])
 
-df = total_df.drop(total_df.columns[setup['personal']], axis=1).sample(frac=1).reset_index(drop=True)
+        par_numeric = par_numeric / 10 # normaliza escala 0/10
+        chi_numeric = chi_numeric / 10
 
+        weight_mat = np.zeros((len(chi_numeric), len(par_numeric)))
+        for i, x1 in enumerate(chi_numeric):
+            weight_mat[i, :] = np.vectorize(self.num_func)(x1, par_numeric)
+        return weight_mat
 
-total_df
+    def get_binary_weight(self, chi_resp, par_resp):
+        weight_mat = np.zeros((len(chi_resp), len(par_resp)))
+        for i, chi in enumerate(chi_resp):
+            for j, par in enumerate(par_resp):
+                weight_mat[i, j] = chi == par
+        return weight_mat
 
+    def get_multiple_choice_weight(self, chi_resp, par_resp, name):
 
-df.head()
+        def handle_pronoun(chi, par):
+            for e in chi:
+                if e in par:
+                    return 1
 
+            if 'Ele/Dele' not in chi and 'Ele/Dele' in par:
+                return 0
 
-personal_df.head()
+            return 0.3
 
+        def handle_lgbt(chi, par):
+            for e in chi:
+                if e in par:
+                    return 1
+                
+            if len(chi) > 0 and len(par) == 0:
+                return 0
+            
+            return 0.6
 
-padrinho_col = df.columns[1]
-curso_col = df.columns[0]
-nome_col = personal_df.columns[1]
-
-
-topic_to_cols = {
-    topic : [df.columns[i] for i in idx] 
-    for topic, idx in topic_to_idx.items()
-}
-
-
-topic_to_cols   
-
-
-topic_to_weights = {
-    'multiple_choice' : [8],
-    'binary' : [2,1],
-    'numerical' : [1],
-    'embedding' : [1,1,1,1],
-}
-
-
-par_idx = df[df[padrinho_col] == 'Veterane'].index.to_list()
-chi_idx = df.index.difference(par_idx).to_list()
-
-
-def apply_restrictions():
-    pass
-
-
-def normalize_func(row):
-    # exp_values = np.exp(row - np.max(row))  
-    # return exp_values / np.sum(exp_values)
-
-    return row / np.sum(row)
-    # mais contrastanete pra valores binarios, melhora na aplicacao do peso
-
-
-def normalize_rows(mat):
-    normalized_mat = np.apply_along_axis(
-        normalize_func, axis=1, arr=mat
-    )
-
-    return normalized_mat
-
-
-def handle_topic_weights(topic, weight_func):
-    col_to_weights = {}
-    for col in topic_to_cols[topic]:
+        if name == 'pronouns':
+            handle_weight = handle_pronoun
+        elif name == 'lgbt':
+            handle_weight = handle_lgbt
+        else:
+            handle_weight = lambda chi, par: any(x in chi for x in par)
         
-        par_resp = df.loc[par_idx, col].to_numpy()
-        chi_resp = df.loc[chi_idx, col].to_numpy()
-
-        weight_mat = weight_func(chi_resp, par_resp)
-
-        apply_restrictions()
-
-        col_to_weights[col] = normalize_rows(weight_mat)
-
-    return col_to_weights
-
-
-
-embedder = SentenceTransformer('all-mpnet-base-v2')
-
-
-def get_embed_weight(chi_resp, par_resp):
-    par_embed = embedder.encode(par_resp)   
-    chi_embed = embedder.encode(chi_resp)
-
-    weight_mat = cosine_similarity(chi_embed, par_embed)
-
-    return weight_mat
-
-
-def num_func(x1, x2):
-    return 1 - (x1 - x2)**2
-
-
-def get_num_weight(chi_resp, par_resp):
-    par_numeric = np.array([int(x) if str(x).isnumeric() else 18 for x in par_resp])
-    chi_numeric = np.array([int(x) if str(x).isnumeric() else 18 for x in chi_resp])
-
-    combined = np.concatenate((par_numeric, chi_numeric))
-    diff = combined.max() - combined.min()
+        weight_mat = np.zeros((len(chi_resp), len(par_resp)))
     
-    par_numeric = par_numeric / diff
-    chi_numeric = chi_numeric / diff
+        par_resp = [x for x in par_resp]
+        chi_resp = [x for x in chi_resp]
+        
+        for i, chi in enumerate(chi_resp):
+            for j, par in enumerate(par_resp):
+                weight_mat[i, j] = handle_weight(chi, par)
+        return weight_mat
 
-    weight_mat = np.zeros((len(chi_numeric), len(par_numeric)))
+    def handle_topic_weights(self):
+        col_to_weights = {}
+        for col in self.columns:
+            if col['type'] in ['role', 'uuid']:
+                continue
+            
+            if col['type'] == 'binary':
+                weight_func = self.get_binary_weight
+            elif col['type'] == 'embedding':
+                weight_func = self.get_embed_weight
+            elif col['type'] == 'numeric':
+                weight_func = self.get_num_weight
+            elif col['type'] == 'multiple_choice':
+                weight_func = lambda chi, par: self.get_multiple_choice_weight(chi, par, col['name'])
+            else:
+                raise ValueError(f"Invalid column type: {col['type']}")
 
-    for i, x1 in enumerate(chi_numeric):
-        weight_mat[i, :] = np.vectorize(num_func)(x1, par_numeric)
+            par_resp = self.df.loc[self.par_idx, col['name']].to_numpy()
+            chi_resp = self.df.loc[self.chi_idx, col['name']].to_numpy()
 
-    return weight_mat
+            weight_mat = weight_func(chi_resp, par_resp)
+            # Placeholder for restrictions, then normalize the weight matrix
+            weight_mat = self.normalize_rows(weight_mat)
+            col_to_weights[col['name']] = weight_mat
+        return col_to_weights
 
+    def distribute_random(self, n, max_n, max_chi_par):
+        distribution = np.ones(n, dtype=int)
+        diff = max_n - n
+        available_indices = set(range(n))
+        while diff > 0:
+            idx = np.random.choice(list(available_indices))
+            distribution[idx] += 1
+            diff -= 1
+            if distribution[idx] == max_chi_par:
+                available_indices.remove(idx)
+        return distribution
 
+    def build_graph_and_match(self):
+        # Compute weights for each topic
+        self.col_to_weights = self.handle_topic_weights()
 
-def get_binary_weight(chi_resp, par_resp):
+        edges = np.zeros((len(self.chi_idx), len(self.par_idx)))
+        weight_sum = 0
+        for col in self.columns:
+            if col['type'] in ['role', 'uuid']:
+                continue
 
-    weight_mat = np.zeros((len(chi_resp), len(par_resp)))
+            weight_sum += int(col['weight'])
+            edges += self.col_to_weights[col['name']] * int(col['weight'])
 
-    for i, chi in enumerate(chi_resp):
-        for j, par in enumerate(par_resp):
-            weight_mat[i, j] = chi == par
+        self.edges = edges / weight_sum
 
-    return weight_mat
+        par_to_mat = {idx: i for i, idx in enumerate(self.par_idx)}
+        chi_to_mat = {idx: i for i, idx in enumerate(self.chi_idx)}
 
+        n_chi = len(self.chi_idx)
+        n_par = len(self.par_idx)
+        max_matches = min(n_chi, n_par) * self.max_connections
 
-def get_multiple_choice_weight(chi_resp, par_resp):
+        chi_dist = self.distribute_random(n_chi, max_matches, self.max_connections)
+        par_dist = self.distribute_random(n_par, max_matches, self.max_connections)
 
-    weight_mat = np.zeros((len(chi_resp), len(par_resp)))
+        chi_ids = np.array([f"{str(self.chi_idx[i])}_{j}"
+                            for i in range(n_chi)
+                            for j in range(chi_dist[i])])
+        par_ids = np.array([f"{str(self.par_idx[i])}_{j}"
+                            for i in range(n_par)
+                            for j in range(par_dist[i])])
 
-    par_resp = [x.split(';') for x in par_resp] 
-    chi_resp = [x.split(';') for x in chi_resp]
+        # Create bipartite graph
+        G = nx.Graph()
+        G.add_nodes_from(chi_ids, bipartite=0)
+        G.add_nodes_from(par_ids, bipartite=1)
+
+        for chi in range(n_chi):
+            for par in range(n_par):
+                i = chi_to_mat[self.chi_idx[chi]]
+                j = par_to_mat[self.par_idx[par]]
+                weight = self.edges[i, j]
+
+                rand_chi = randint(0, chi_dist[chi] - 1)
+                rand_par = randint(0, par_dist[par] - 1)
+
+                for k in range(chi_dist[chi]):
+                    if k == rand_chi:
+                        continue
+                    for l in range(par_dist[par]):
+                        if l == rand_par:
+                            continue
+                        G.add_edge(f"{self.chi_idx[chi]}_{k}", f"{self.par_idx[par]}_{l}", weight=0)
+
+                G.add_edge(f"{self.chi_idx[chi]}_{rand_chi}", f"{self.par_idx[par]}_{rand_par}", weight=weight)
+
+        matching = nx.matching.max_weight_matching(G, maxcardinality=True)
+        return matching
+
+    def perform_matching(self):
+        matching = self.build_graph_and_match()
+
+        matched = {}
+
+        for p1_idx, p2_idx in matching:
+            p1_uuid = self.df.loc[int(p1_idx.split('_')[0]), 'id']
+            p2_uuid = self.df.loc[int(p2_idx.split('_')[0]), 'id']
+
+            p1_pronouns = self.df.loc[int(p1_idx.split('_')[0]), 'pronouns']
+            p2_pronouns = self.df.loc[int(p2_idx.split('_')[0]), 'pronouns']
+
+            if self.df.loc[int(p1_idx.split('_')[0]), 'role'] == 'bixe':
+                p1_uuid, p2_uuid = p2_uuid, p1_uuid
+                p1_pronouns, p2_pronouns = p2_pronouns, p1_pronouns
+
+            # if not matched.get(f"{p1_uuid}_{p1_pronouns}"):
+            #     matched[f"{p1_uuid}_{p1_pronouns}"] = [f"{p2_uuid}_{p2_pronouns}"]
+            # else:
+            #     matched[f"{p1_uuid}_{p1_pronouns}"].append(f"{p2_uuid}_{p2_pronouns}")
+
+            if not matched.get(f"{p2_uuid}_{p2_pronouns}"):
+                matched[f"{p2_uuid}_{p2_pronouns}"] = [f"{p1_uuid}_{p1_pronouns}"]
+            else:
+                matched[f"{p2_uuid}_{p2_pronouns}"].append(f"{p1_uuid}_{p1_pronouns}")
+        return json.dumps(matched)
+
+if __name__ == "__main__":
+    import json
+    # Example: load data from a JSON file
+    with open('data.json', 'r') as f:
+        data = StringIO(f.read())
     
-    for i, chi in enumerate(chi_resp):
-        for j, par in enumerate(par_resp):
-            weight_mat[i, j] = any(element in chi for element in par)
-
-    return weight_mat
-
-
-col_to_weights = {
-    **handle_topic_weights('multiple_choice', get_multiple_choice_weight),
-    **handle_topic_weights('binary', get_binary_weight),
-    **handle_topic_weights('numerical', get_num_weight),
-    **handle_topic_weights('embedding', get_embed_weight),
-}
-
-
-col_to_weights
-
-
-edges = np.zeros((len(chi_idx), len(par_idx)))
-
-for topic, cols in topic_to_cols.items():
-    for i, col in enumerate(cols):
-        edges += col_to_weights[col] * topic_to_weights[topic][i]
-
-weight_sum = sum(np.sum(weights) for weights in topic_to_weights.values())
-
-edges = edges / weight_sum
-
-
-edges
-
-
-par_to_mat = { idx : i for i, idx in enumerate(par_idx) }
-chi_to_mat = { idx : i for i, idx in enumerate(chi_idx) }
-
-
-def distribute_random(n, max_n, max_chi_par):
-    distribution = np.ones(n, dtype=int) 
-    diff = max_n - n
-
-    available_indices = set(range(n))
-
-    while diff > 0:
-        idx = np.random.choice(list(available_indices))
-        
-        distribution[idx] += 1
-        diff -= 1
-        
-        if distribution[idx] == max_chi_par:
-            available_indices.remove(idx)
-
-    return distribution
-
-
-
-n_chi = len(chi_idx)
-n_par = len(par_idx)
-
-max_chi_par = 2
-
-diff = n_chi - n_par
-
-max_matches = min(n_chi, n_par)*max_chi_par
-
-chi_dist = distribute_random(n_chi, max_matches, max_chi_par)
-par_dist = distribute_random(n_par, max_matches, max_chi_par)
-
-chi_ids = np.array([f'{str(chi_idx[i])}_{j}' for i in range(len(chi_idx)) for j in range(chi_dist[i])])
-par_ids = np.array([f'{str(par_idx[i])}_{j}' for i in range(len(par_idx)) for j in range(par_dist[i])])
-# duplica os pais e filhos pra terem o mesmo numero 
-
-G = nx.Graph()
-G.add_nodes_from(chi_ids, bipartite=0)
-G.add_nodes_from(par_ids, bipartite=1)
-
-for chi in chi_ids:
-    for par in par_ids:
-        i = chi_to_mat[int(chi.split('_')[0])]
-        j = par_to_mat[int(par.split('_')[0])]
-
-        weight = edges[i, j]
-        if int(chi.split('_')[1]) > 0 and int(par.split('_')[0]) > 0:
-            weight = 0
-        # de for repetido tanto o filho quanto o pai, peso eh zero pra nao repetir 
-        # condicao pode ser amenizada pra melhorar o algoritmo em si, mas e ajustavel com os pesos dos topicos
-
-        G.add_edge(chi, par, weight=weight)
-        
-        # precisa usar id do dataframe, porque matching nao necessariamente sai num formato fixo
-        # nao da pra usar relativo à matriz
-
-matching = nx.matching.max_weight_matching(G, maxcardinality=True)
-
-print(matching)
-
-
-
-
-uid_to_row = { row['ID'] : i for i, row in personal_df.iterrows() }
-uid_to_row
-
-
-padrinho_nomes = personal_df[personal_df[padrinho_col] == 'Veterane'][nome_col].to_list()
-bixos_nomes = personal_df[personal_df[padrinho_col] == 'Bixe'][nome_col].to_list()
-
-padrinho_to_bixo = { nome : [] for nome in padrinho_nomes }
-bixo_to_padrinho = { nome : [] for nome in bixos_nomes }
-
-for p1_idx, p2_idx in matching:
-    p1_personal_row = uid_to_row[df.loc[int(p1_idx.split('_')[0]), 'ID']]
-    p2_personal_row = uid_to_row[df.loc[int(p2_idx.split('_')[0]), 'ID']]
-
-    p1_nome = personal_df.loc[p1_personal_row, nome_col]
-    p2_nome = personal_df.loc[p2_personal_row, nome_col]
-
-    if personal_df.loc[p1_personal_row, padrinho_col] == "Veterane":
-        padrinho_to_bixo[p1_nome].append(p2_nome)
-        bixo_to_padrinho[p2_nome].append(p1_nome)
-    else:
-        padrinho_to_bixo[p2_nome].append(p1_nome)
-        bixo_to_padrinho[p1_nome].append(p2_nome)
-
-
-print(padrinho_to_bixo)
-print(bixo_to_padrinho)
+    matcher = MatchMaker()
+    matcher.import_data(data)
+    with open('matches.json', 'w') as f:
+        f.write(matcher.perform_matching())
