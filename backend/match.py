@@ -296,10 +296,10 @@ class MatchMaker:
             # else:
             #     matched[f"{p1_uuid}_{p1_pronouns}"].append(f"{p2_uuid}_{p2_pronouns}")
 
-            if not matched.get(f"{p2_uuid}_{p2_pronouns}"):
-                matched[f"{p2_uuid}_{p2_pronouns}"] = [f"{p1_uuid}_{p1_pronouns}"]
+            if not matched.get(f"{p2_uuid}"):
+                matched[f"{p2_uuid}"] = [f"{p1_uuid}"]
             else:
-                matched[f"{p2_uuid}_{p2_pronouns}"].append(f"{p1_uuid}_{p1_pronouns}")
+                matched[f"{p2_uuid}"].append(f"{p1_uuid}")
         return json.dumps(matched)
 
 if __name__ == "__main__":
